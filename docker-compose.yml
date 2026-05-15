@@ -1,0 +1,61 @@
+# Demo observability UIs:
+#   Jaeger:       http://localhost:16686  (trace)
+#   Prometheus:   http://localhost:9093   (metric; host 9093 → container 9090) → ping_requests_total
+#   OpenObserve:  http://localhost:5080   (trace + metric) — root@example.com / Complexpass#123
+#   API:          http://localhost:8088/ping
+
+services:
+  api:
+    build: ./app
+    ports:
+      - "8088:8088"
+    environment:
+      OTEL_SERVICE_NAME: api
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+    depends_on:
+      - jaeger
+      - openobserve
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9093:9090"
+    depends_on:
+      - otel-collector
+
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:latest
+    environment:
+      ZO_ROOT_USER_EMAIL: root@example.com
+      ZO_ROOT_USER_PASSWORD: Complexpass#123
+      ZO_LOCAL_MODE: "true"
+    ports:
+      - "5080:5080"
+    volumes:
+      - openobserve-data:/data
+
+volumes:
+  openobserve-data:
