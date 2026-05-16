@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +23,14 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
+
+var podIdentity = loadPodIdentity()
+
+type pingResponse struct {
+	Message string `json:"message"`
+	Pod     string `json:"pod"`
+	IP      string `json:"ip"`
+}
 
 func main() {
 	ctx := context.Background()
@@ -68,9 +78,14 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
 	)
 	counter.Add(r.Context(), 1, metric.WithAttributes(attribute.String("route", "/ping")))
 
+	body, _ := json.Marshal(pingResponse{
+		Message: "pong",
+		Pod:     podIdentity.Pod,
+		IP:      podIdentity.IP,
+	})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"message":"pong"}`))
+	_, _ = w.Write(body)
 }
 
 func setupOTel(ctx context.Context) (func(context.Context) error, error) {
@@ -80,6 +95,7 @@ func setupOTel(ctx context.Context) (func(context.Context) error, error) {
 	}
 
 	res, err := resource.New(ctx,
+		resource.WithFromEnv(),
 		resource.WithAttributes(
 			semconv.ServiceNameKey.String(envOr("OTEL_SERVICE_NAME", "api")),
 		),
@@ -148,4 +164,55 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+type podIdentityInfo struct {
+	Pod string
+	IP  string
+}
+
+func loadPodIdentity() podIdentityInfo {
+	pod := envOr("POD_NAME", "")
+	if pod == "" {
+		pod, _ = os.Hostname()
+	}
+	ip := envOr("POD_IP", "")
+	if ip == "" {
+		ip = firstPrivateIPv4()
+	}
+	return podIdentityInfo{Pod: pod, IP: ip}
+}
+
+func firstPrivateIPv4() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			ip = ip.To4()
+			if ip == nil {
+				continue
+			}
+			return ip.String()
+		}
+	}
+	return ""
 }

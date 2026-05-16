@@ -27,7 +27,7 @@ if [[ "${1:-}" == "all" ]]; then
 fi
 
 echo "==> Remove workloads (PVCs kept — Jaeger, OpenObserve, Prometheus data preserved)"
-kubectl delete deployment,ingress,service -n observability --ignore-not-found
+kubectl delete deployment,statefulset,ingress,service -n observability --ignore-not-found
 kubectl delete configmap -n observability otel-collector-config prometheus-config --ignore-not-found
 
 stop_tunnel
