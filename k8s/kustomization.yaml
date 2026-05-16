@@ -5,6 +5,7 @@ namespace: observability
 
 resources:
   - namespace.yaml
+  - pvc.yaml
   - jaeger.yaml
   - openobserve.yaml
   - otel-collector.yaml

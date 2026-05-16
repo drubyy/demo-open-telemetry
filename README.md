@@ -34,7 +34,11 @@ curl http://localhost:8088/ping
 
 Or step by step: `minikube addons enable ingress` → `minikube start` → `eval $(minikube docker-env)` → `docker build -t demo-api:latest ./app` → `kubectl apply -k .`
 
-Stop workloads: `./bin/stop-local` (also stops `minikube tunnel` on macOS)
+Stop workloads: `./bin/stop-local` (keeps PVCs — Jaeger / OpenObserve / Prometheus data; stops `minikube tunnel` on macOS)
+
+Delete workloads **and** data: `./bin/stop-local all`
+
+**Persistent data:** `k8s/pvc.yaml` mounts volumes for Jaeger (Badger), OpenObserve (`/data`), Prometheus (TSDB). `./bin/stop-local` removes Deployments/Services but **not** PVCs; `./bin/start-local` reattaches the same volumes. `minikube delete` or `kubectl delete -k .` removes PVCs and wipes data.
 
 **`/etc/hosts`:** `./bin/start-local` updates it automatically (sudo once when the IP changes).
 
@@ -79,6 +83,8 @@ kubectl -n observability rollout restart deployment/otel-collector deployment/pr
 ### Teardown
 
 ```bash
-./bin/stop-local
+./bin/stop-local          # keep observability data on PVCs
+./bin/stop-local all      # delete PVCs too
 minikube stop
+minikube delete           # wipes entire cluster including PVCs
 ```

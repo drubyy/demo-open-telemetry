@@ -24,6 +24,13 @@ spec:
               value: "true"
           ports:
             - containerPort: 5080
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: openobserve-data
 ---
 apiVersion: v1
 kind: Service

@@ -18,9 +18,24 @@ if [[ "${1:-}" == "tunnel" ]]; then
   exit 0
 fi
 
-echo "==> Remove Kubernetes resources"
-kubectl delete -k . --ignore-not-found
+if [[ "${1:-}" == "all" ]]; then
+  echo "==> Remove all resources including PVCs (data will be lost)"
+  kubectl delete -k . --ignore-not-found
+  stop_tunnel
+  echo "==> Done"
+  exit 0
+fi
+
+echo "==> Remove workloads (PVCs kept — Jaeger, OpenObserve, Prometheus data preserved)"
+kubectl delete deployment,ingress,service -n observability --ignore-not-found
+kubectl delete configmap -n observability otel-collector-config prometheus-config --ignore-not-found
 
 stop_tunnel
 
-echo "==> Done (minikube cluster is still running; run 'minikube stop' to stop the VM)"
+cat <<EOF
+==> Done (minikube cluster is still running; run 'minikube stop' to stop the VM)
+
+Data volumes kept. Redeploy: ./bin/start-local
+Delete data too:       ./bin/stop-local all
+
+EOF
