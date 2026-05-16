@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT}"
+
+MINIKUBE_CPUS="${MINIKUBE_CPUS:-4}"
+MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-4096}"
+MINIKUBE_DRIVER="${MINIKUBE_DRIVER:-docker}"
+HOSTS_MARKER="# demo-open-telemetry-minikube"
+HOSTS_DOMAINS="api.observability.local jaeger.observability.local prometheus.observability.local openobserve.observability.local"
+TUNNEL_LOG="${ROOT}/.minikube-tunnel.log"
+
+minikube_driver() {
+  minikube profile -f minikube driver 2>/dev/null || echo "${MINIKUBE_DRIVER}"
+}
+
+# Docker driver on macOS/Windows: minikube IP is not reachable from the host for Ingress.
+needs_minikube_tunnel() {
+  [[ "$(minikube_driver)" == "docker" ]] || return 1
+  case "$(uname -s)" in
+    Darwin | MINGW* | MSYS* | CYGWIN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ingress_host_ip() {
+  if needs_minikube_tunnel; then
+    echo "127.0.0.1"
+  else
+    minikube ip
+  fi
+}
+
+update_etc_hosts() {
+  local ip="$1"
+
+  if [[ "${SKIP_ETC_HOSTS:-}" == "1" ]]; then
+    echo "==> /etc/hosts (skipped, SKIP_ETC_HOSTS=1)"
+    return 0
+  fi
+
+  if grep -q "${HOSTS_MARKER}" /etc/hosts 2>/dev/null \
+    && grep -qE "^${ip}[[:space:]].*api\.observability\.local" /etc/hosts 2>/dev/null; then
+    echo "==> /etc/hosts already up to date (${ip})"
+    return 0
+  fi
+
+  echo "==> Update /etc/hosts (${ip}) — requires sudo"
+  local tmp
+  tmp="$(mktemp)"
+  grep -vE 'observability\.local|demo-open-telemetry-minikube' /etc/hosts >"${tmp}" 2>/dev/null || cp /etc/hosts "${tmp}"
+  printf '%s %s %s\n' "${ip}" "${HOSTS_DOMAINS}" "${HOSTS_MARKER}" >>"${tmp}"
+  sudo cp "${tmp}" /etc/hosts
+  rm -f "${tmp}"
+  echo "    done"
+}
+
+start_minikube_tunnel() {
+  if ! needs_minikube_tunnel; then
+    return 0
+  fi
+
+  if pgrep -f "[m]inikube tunnel" >/dev/null 2>&1; then
+    echo "==> minikube tunnel (already running)"
+    return 0
+  fi
+
+  echo "==> minikube tunnel (Docker trên macOS — cần sudo, chạy nền)"
+  echo "    Log: ${TUNNEL_LOG}"
+  sudo -E env "MINIKUBE_HOME=${MINIKUBE_HOME:-$HOME/.minikube}" \
+    nohup minikube tunnel >>"${TUNNEL_LOG}" 2>&1 &
+  sleep 8
+}
+
+verify_ingress() {
+  local host_ip
+  host_ip="$(ingress_host_ip)"
+  echo "==> Verify ingress via ${host_ip}"
+  if curl -sf -m 10 -H "Host: api.observability.local" "http://${host_ip}/ping" >/dev/null; then
+    echo "    OK (api /ping)"
+    return 0
+  fi
+  echo "    WARN: không kết nối được Ingress"
+  if needs_minikube_tunnel; then
+    echo "    Thử: sudo minikube tunnel   (terminal riêng, giữ chạy)"
+    echo "    /etc/hosts phải trỏ *.observability.local → 127.0.0.1"
+  fi
+  return 1
+}
+
+echo "==> Minikube cluster"
+if ! minikube status >/dev/null 2>&1; then
+  minikube start --cpus="${MINIKUBE_CPUS}" --memory="${MINIKUBE_MEMORY}" --driver="${MINIKUBE_DRIVER}"
+else
+  echo "    cluster already running"
+fi
+
+echo "==> Ingress addon (nginx)"
+minikube addons enable ingress
+
+echo "==> Wait for ingress-nginx (admission webhook must be up before Ingress apply)"
+for i in $(seq 1 40); do
+  if kubectl wait --namespace ingress-nginx \
+    --for=condition=ready pod \
+    --selector=app.kubernetes.io/component=controller \
+    --timeout=10s >/dev/null 2>&1; then
+    echo "    controller ready"
+    break
+  fi
+  if [[ "${i}" -eq 40 ]]; then
+    echo "    timeout — check: kubectl -n ingress-nginx get pods"
+    exit 1
+  fi
+  sleep 3
+done
+sleep 5
+
+start_minikube_tunnel
+
+echo "==> Build API image inside minikube Docker"
+eval "$(minikube docker-env)"
+docker build -t demo-api:latest ./app
+
+echo "==> Deploy (overlays/minikube)"
+for i in 1 2 3 4 5; do
+  if kubectl apply -k .; then
+    break
+  fi
+  if [[ "${i}" -eq 5 ]]; then
+    echo "apply failed after retries"
+    exit 1
+  fi
+  echo "    webhook not ready, retry in 10s..."
+  sleep 10
+done
+
+update_etc_hosts "$(ingress_host_ip)"
+
+echo "==> Pods"
+kubectl -n observability get pods
+
+verify_ingress || true
+
+HOST_IP="$(ingress_host_ip)"
+if needs_minikube_tunnel; then
+  TUNNEL_NOTE="
+==> Lưu ý (Docker + macOS)
+  Ingress chỉ hoạt động khi minikube tunnel đang chạy.
+  /etc/hosts dùng 127.0.0.1 (không dùng minikube ip $(minikube ip)).
+  Dừng tunnel: ./bin/stop-local tunnel   hoặc: sudo pkill -f 'minikube tunnel'
+"
+else
+  TUNNEL_NOTE=""
+fi
+
+cat <<EOF
+
+==> Done (ingress host IP: ${HOST_IP}, minikube node IP: $(minikube ip))
+
+${TUNNEL_NOTE}
+==> URLs
+  API:          http://api.observability.local/ping
+  Jaeger:       http://jaeger.observability.local
+  Prometheus:   http://prometheus.observability.local
+  OpenObserve:  http://openobserve.observability.local/web/
+                (root@example.com / Complexpass#123)
+
+==> Generate traffic
+  curl http://api.observability.local/ping
+
+EOF

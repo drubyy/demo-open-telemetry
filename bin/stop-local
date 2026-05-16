@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT}"
+
+stop_tunnel() {
+  if pgrep -f "[m]inikube tunnel" >/dev/null 2>&1; then
+    echo "==> Stop minikube tunnel"
+    sudo pkill -f "[m]inikube tunnel" || true
+  else
+    echo "==> minikube tunnel (not running)"
+  fi
+}
+
+if [[ "${1:-}" == "tunnel" ]]; then
+  stop_tunnel
+  exit 0
+fi
+
+echo "==> Remove Kubernetes resources"
+kubectl delete -k . --ignore-not-found
+
+stop_tunnel
+
+echo "==> Done (minikube cluster is still running; run 'minikube stop' to stop the VM)"

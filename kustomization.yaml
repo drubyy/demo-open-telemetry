@@ -1,0 +1,6 @@
+# Default: local minikube. EKS: kubectl apply -k overlays/eks
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - overlays/minikube
